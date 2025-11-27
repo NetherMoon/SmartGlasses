@@ -1,4 +1,4 @@
-#V3 With voice command support
+#V4 With multiple creative modes
 
 
 import socket
@@ -20,10 +20,17 @@ AUDIO_PORT = 5001  # Separate port for audio
 
 # ============== MODE SELECTION ==============
 # Available modes:
-#   "canny"  - Canny edge detection (black & white edges)
-#   "normal" - Normal camera with overlay text
-# Can be changed via voice command: "camera mode canny" or "camera mode normal"
-current_mode = "canny"
+#   "normal"    - Normal camera with overlay
+#   "canny"     - Canny edge detection (black & white edges)
+#   "night"     - Night vision (green tint + brightness boost)
+#   "thermal"   - Fake thermal camera effect
+#   "cartoon"   - Cartoon/comic book style
+#   "blur"      - Background blur (portrait mode)
+#   "negative"  - Inverted colors
+#   "pixelate"  - Retro pixelated look
+# 
+# Voice commands: "camera mode <name>" or "mode <name>"
+current_mode = "normal"
 mode_lock = threading.Lock()
 # ============================================
 
@@ -70,6 +77,107 @@ def process_normal(frame):
     
     return frame
 
+def process_night(frame):
+    """
+    Night vision effect - green tint with enhanced brightness
+    """
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Enhance contrast and brightness
+    enhanced = cv2.equalizeHist(gray)
+    
+    # Apply slight blur to reduce noise
+    enhanced = cv2.GaussianBlur(enhanced, (3, 3), 0)
+    
+    # Create green-tinted image
+    night_vision = np.zeros_like(frame)
+    night_vision[:, :, 1] = enhanced  # Green channel only
+    
+    # Add scan lines for effect
+    for i in range(0, frame.shape[0], 3):
+        night_vision[i, :, :] = night_vision[i, :, :] * 0.7
+    
+    return night_vision
+
+def process_thermal(frame):
+    """
+    Fake thermal camera effect using color mapping
+    """
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Apply thermal colormap
+    thermal = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
+    
+    # Add slight blur for thermal camera look
+    thermal = cv2.GaussianBlur(thermal, (5, 5), 0)
+    
+    return thermal
+
+def process_cartoon(frame):
+    """
+    Cartoon/comic book style effect
+    """
+    # Reduce color palette
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.medianBlur(gray, 5)
+    
+    # Get edges
+    edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
+                                   cv2.THRESH_BINARY, 9, 9)
+    
+    # Reduce colors in original image
+    color = cv2.bilateralFilter(frame, 9, 300, 300)
+    
+    # Combine edges with color
+    cartoon = cv2.bitwise_and(color, color, mask=edges)
+    
+    return cartoon
+
+def process_blur(frame):
+    """
+    Portrait mode - blur effect (simulated depth of field)
+    Blurs the edges while keeping center sharp
+    """
+    h, w = frame.shape[:2]
+    
+    # Create a mask - sharp in center, blurred at edges
+    mask = np.zeros((h, w), dtype=np.float32)
+    cv2.ellipse(mask, (w//2, h//2), (w//3, h//2), 0, 0, 360, 1, -1)
+    mask = cv2.GaussianBlur(mask, (51, 51), 0)
+    
+    # Create blurred version
+    blurred = cv2.GaussianBlur(frame, (21, 21), 0)
+    
+    # Blend based on mask
+    mask_3ch = np.stack([mask] * 3, axis=-1)
+    result = (frame * mask_3ch + blurred * (1 - mask_3ch)).astype(np.uint8)
+    
+    return result
+
+def process_negative(frame):
+    """
+    Inverted/negative colors
+    """
+    return cv2.bitwise_not(frame)
+
+def process_pixelate(frame):
+    """
+    Retro pixelated look
+    """
+    h, w = frame.shape[:2]
+    
+    # Shrink
+    pixel_size = 8
+    small = cv2.resize(frame, (w // pixel_size, h // pixel_size), 
+                       interpolation=cv2.INTER_LINEAR)
+    
+    # Scale back up with nearest neighbor
+    pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+    
+    return pixelated
+
 def process_frame(frame):
     """
     Route to the appropriate processing function based on current_mode
@@ -78,13 +186,19 @@ def process_frame(frame):
     with mode_lock:
         mode = current_mode
     
-    if mode == "canny":
-        return process_canny(frame)
-    elif mode == "normal":
-        return process_normal(frame)
-    else:
-        logging.warning(f"Unknown mode: {mode}, defaulting to normal")
-        return process_normal(frame)
+    processors = {
+        "normal": process_normal,
+        "canny": process_canny,
+        "night": process_night,
+        "thermal": process_thermal,
+        "cartoon": process_cartoon,
+        "blur": process_blur,
+        "negative": process_negative,
+        "pixelate": process_pixelate,
+    }
+    
+    processor = processors.get(mode, process_normal)
+    return processor(frame)
 
 
 def parse_voice_command(text):
@@ -95,11 +209,23 @@ def parse_voice_command(text):
     logging.info(f"Heard: '{text}'")
     
     # Check for mode change commands
-    if "camera mode" in text or "mode" in text:
-        if "canny" in text or "edge" in text or "one" in text:
-            return "canny"
-        elif "normal" in text or "regular" in text or "two" in text:
-            return "normal"
+    if "mode" in text or "camera" in text or any(str(i) in text for i in range(1, 9)):
+        # Map voice words to modes (including number alternatives)
+        mode_keywords = {
+            "normal": ["normal", "regular", "standard", "default", "1", "one", "won"],
+            "canny": ["canny", "edge", "edges", "candy", "2", "two", "to", "too"],
+            "night": ["night", "night vision", "green", "dark", "3", "three", "tree"],
+            "thermal": ["thermal", "heat", "infrared", "thermo", "4", "four", "for"],
+            "cartoon": ["cartoon", "comic", "toon", "animated", "5", "five"],
+            "blur": ["blur", "portrait", "bokeh", "depth", "6", "six", "sex"],
+            "negative": ["negative", "invert", "inverted", "reverse", "7", "seven"],
+            "pixelate": ["pixel", "pixelate", "pixelated", "retro", "8-bit", "minecraft", "8", "eight", "ate"],
+        }
+        
+        for mode, keywords in mode_keywords.items():
+            for keyword in keywords:
+                if keyword in text:
+                    return mode
     
     return None
 
@@ -194,7 +320,8 @@ def main():
     
     logging.info(f"Server listening on {HOST}:{PORT}")
     logging.info(f"Processing mode: {current_mode}")
-    logging.info("Voice commands: 'camera mode canny' or 'camera mode normal'")
+    logging.info("Modes: 1=normal, 2=canny, 3=night, 4=thermal, 5=cartoon, 6=blur, 7=negative, 8=pixelate")
+    logging.info("Voice command: 'mode <number>' or 'mode <name>'")
     logging.info("Waiting for Raspberry Pi connection...")
     
     try:
