@@ -1,5 +1,4 @@
-#!/usr/bin/python
-# -*- coding: UTF-8 -*-
+#V1 Which works with cool black-white
 
 import sys
 import time

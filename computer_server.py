@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-# -*- coding: UTF-8 -*-
+#V1 Which works with cool black-white
+
 
 import socket
 import cv2
