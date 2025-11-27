@@ -1,4 +1,4 @@
-#V2 With processing modes
+#V3 With voice command support
 
 
 import socket
@@ -7,17 +7,24 @@ import pickle
 import struct
 import logging
 import numpy as np
+import threading
+import speech_recognition as sr
+import io
+import wave
 from datetime import datetime
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all network interfaces
 PORT = 5000
+AUDIO_PORT = 5001  # Separate port for audio
 
 # ============== MODE SELECTION ==============
 # Available modes:
 #   "canny"  - Canny edge detection (black & white edges)
 #   "normal" - Normal camera with overlay text
-MODE = "canny"
+# Can be changed via voice command: "camera mode canny" or "camera mode normal"
+current_mode = "canny"
+mode_lock = threading.Lock()
 # ============================================
 
 logging.basicConfig(level=logging.INFO)
@@ -65,17 +72,120 @@ def process_normal(frame):
 
 def process_frame(frame):
     """
-    Route to the appropriate processing function based on MODE
+    Route to the appropriate processing function based on current_mode
     """
-    if MODE == "canny":
+    global current_mode
+    with mode_lock:
+        mode = current_mode
+    
+    if mode == "canny":
         return process_canny(frame)
-    elif MODE == "normal":
+    elif mode == "normal":
         return process_normal(frame)
     else:
-        logging.warning(f"Unknown mode: {MODE}, defaulting to normal")
+        logging.warning(f"Unknown mode: {mode}, defaulting to normal")
         return process_normal(frame)
 
+
+def parse_voice_command(text):
+    """
+    Parse voice command and return new mode if valid
+    """
+    text = text.lower().strip()
+    logging.info(f"Heard: '{text}'")
+    
+    # Check for mode change commands
+    if "camera mode" in text or "mode" in text:
+        if "canny" in text or "edge" in text or "one" in text:
+            return "canny"
+        elif "normal" in text or "regular" in text or "two" in text:
+            return "normal"
+    
+    return None
+
+
+def audio_server_thread():
+    """
+    Separate thread to handle audio input and speech recognition
+    """
+    global current_mode
+    
+    recognizer = sr.Recognizer()
+    
+    audio_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    audio_socket.bind((HOST, AUDIO_PORT))
+    audio_socket.listen(1)
+    
+    logging.info(f"Audio server listening on {HOST}:{AUDIO_PORT}")
+    
+    while True:
+        try:
+            conn, addr = audio_socket.accept()
+            logging.info(f"Audio connection from {addr}")
+            
+            while True:
+                # Receive header: sample_rate (4 bytes) + audio_size (4 bytes)
+                header_data = b""
+                while len(header_data) < 8:
+                    packet = conn.recv(8 - len(header_data))
+                    if not packet:
+                        break
+                    header_data += packet
+                
+                if len(header_data) < 8:
+                    break
+                
+                sample_rate, audio_size = struct.unpack("!II", header_data)
+                
+                # Receive audio data
+                audio_data = b""
+                while len(audio_data) < audio_size:
+                    packet = conn.recv(4096)
+                    if not packet:
+                        break
+                    audio_data += packet
+                
+                if len(audio_data) < audio_size:
+                    break
+                
+                # Convert to AudioData for speech recognition
+                try:
+                    # Audio is sent as raw PCM data with dynamic sample rate
+                    # sample_width=2 for paInt16 (16 bits = 2 bytes)
+                    audio = sr.AudioData(audio_data, sample_rate, 2)
+                    
+                    # Use Google Speech Recognition (free, no API key needed)
+                    text = recognizer.recognize_google(audio)
+                    
+                    # Parse command
+                    new_mode = parse_voice_command(text)
+                    if new_mode:
+                        with mode_lock:
+                            old_mode = current_mode
+                            current_mode = new_mode
+                        logging.info(f"Mode changed: {old_mode} -> {new_mode}")
+                        # Send confirmation back
+                        conn.sendall(f"MODE:{new_mode}".encode())
+                    else:
+                        conn.sendall(b"OK")
+                        
+                except sr.UnknownValueError:
+                    conn.sendall(b"OK")  # Could not understand audio
+                except sr.RequestError as e:
+                    logging.error(f"Speech recognition error: {e}")
+                    conn.sendall(b"OK")
+                    
+        except Exception as e:
+            logging.error(f"Audio server error: {e}")
+        finally:
+            conn.close()
+
 def main():
+    # Start audio server in separate thread
+    audio_thread = threading.Thread(target=audio_server_thread, daemon=True)
+    audio_thread.start()
+    
     # Create socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -83,7 +193,8 @@ def main():
     server_socket.listen(1)
     
     logging.info(f"Server listening on {HOST}:{PORT}")
-    logging.info(f"Processing mode: {MODE}")
+    logging.info(f"Processing mode: {current_mode}")
+    logging.info("Voice commands: 'camera mode canny' or 'camera mode normal'")
     logging.info("Waiting for Raspberry Pi connection...")
     
     try:
