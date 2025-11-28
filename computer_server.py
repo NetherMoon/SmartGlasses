@@ -24,12 +24,8 @@ AUDIO_PORT = 5001  # Separate port for audio
 #   "canny"     - Canny edge detection (black & white edges)
 #   "night"     - Night vision (green tint + brightness boost)
 #   "thermal"   - Fake thermal camera effect
-#   "cartoon"   - Cartoon/comic book style
-#   "blur"      - Background blur (portrait mode)
-#   "negative"  - Inverted colors
-#   "pixelate"  - Retro pixelated look
 # 
-# Voice commands: "camera mode <name>" or "mode <name>"
+# Voice commands: "mode <number>" or "mode <name>"
 current_mode = "normal"
 mode_lock = threading.Lock()
 # ============================================
@@ -115,69 +111,6 @@ def process_thermal(frame):
     
     return thermal
 
-def process_cartoon(frame):
-    """
-    Cartoon/comic book style effect
-    """
-    # Reduce color palette
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.medianBlur(gray, 5)
-    
-    # Get edges
-    edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
-                                   cv2.THRESH_BINARY, 9, 9)
-    
-    # Reduce colors in original image
-    color = cv2.bilateralFilter(frame, 9, 300, 300)
-    
-    # Combine edges with color
-    cartoon = cv2.bitwise_and(color, color, mask=edges)
-    
-    return cartoon
-
-def process_blur(frame):
-    """
-    Portrait mode - blur effect (simulated depth of field)
-    Blurs the edges while keeping center sharp
-    """
-    h, w = frame.shape[:2]
-    
-    # Create a mask - sharp in center, blurred at edges
-    mask = np.zeros((h, w), dtype=np.float32)
-    cv2.ellipse(mask, (w//2, h//2), (w//3, h//2), 0, 0, 360, 1, -1)
-    mask = cv2.GaussianBlur(mask, (51, 51), 0)
-    
-    # Create blurred version
-    blurred = cv2.GaussianBlur(frame, (21, 21), 0)
-    
-    # Blend based on mask
-    mask_3ch = np.stack([mask] * 3, axis=-1)
-    result = (frame * mask_3ch + blurred * (1 - mask_3ch)).astype(np.uint8)
-    
-    return result
-
-def process_negative(frame):
-    """
-    Inverted/negative colors
-    """
-    return cv2.bitwise_not(frame)
-
-def process_pixelate(frame):
-    """
-    Retro pixelated look
-    """
-    h, w = frame.shape[:2]
-    
-    # Shrink
-    pixel_size = 8
-    small = cv2.resize(frame, (w // pixel_size, h // pixel_size), 
-                       interpolation=cv2.INTER_LINEAR)
-    
-    # Scale back up with nearest neighbor
-    pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
-    
-    return pixelated
-
 def process_frame(frame):
     """
     Route to the appropriate processing function based on current_mode
@@ -191,10 +124,6 @@ def process_frame(frame):
         "canny": process_canny,
         "night": process_night,
         "thermal": process_thermal,
-        "cartoon": process_cartoon,
-        "blur": process_blur,
-        "negative": process_negative,
-        "pixelate": process_pixelate,
     }
     
     processor = processors.get(mode, process_normal)
@@ -209,17 +138,13 @@ def parse_voice_command(text):
     logging.info(f"Heard: '{text}'")
     
     # Check for mode change commands
-    if "mode" in text or "camera" in text or any(str(i) in text for i in range(1, 9)):
+    if "mode" in text or "camera" in text or any(str(i) in text for i in range(1, 5)):
         # Map voice words to modes (including number alternatives)
         mode_keywords = {
             "normal": ["normal", "regular", "standard", "default", "1", "one", "won"],
             "canny": ["canny", "edge", "edges", "candy", "2", "two", "to", "too"],
             "night": ["night", "night vision", "green", "dark", "3", "three", "tree"],
             "thermal": ["thermal", "heat", "infrared", "thermo", "4", "four", "for"],
-            "cartoon": ["cartoon", "comic", "toon", "animated", "5", "five"],
-            "blur": ["blur", "portrait", "bokeh", "depth", "6", "six", "sex"],
-            "negative": ["negative", "invert", "inverted", "reverse", "7", "seven"],
-            "pixelate": ["pixel", "pixelate", "pixelated", "retro", "8-bit", "minecraft", "8", "eight", "ate"],
         }
         
         for mode, keywords in mode_keywords.items():
@@ -320,7 +245,7 @@ def main():
     
     logging.info(f"Server listening on {HOST}:{PORT}")
     logging.info(f"Processing mode: {current_mode}")
-    logging.info("Modes: 1=normal, 2=canny, 3=night, 4=thermal, 5=cartoon, 6=blur, 7=negative, 8=pixelate")
+    logging.info("Modes: 1=normal, 2=canny, 3=night, 4=thermal")
     logging.info("Voice command: 'mode <number>' or 'mode <name>'")
     logging.info("Waiting for Raspberry Pi connection...")
     
